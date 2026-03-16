@@ -1,0 +1,14 @@
+[run]
+branch = True
+source = app
+omit =
+    app/*/__init__.py
+    app/main.py
+    app/ioc.py
+    app/logging.py
+    tests/*
+
+[report]
+fail_under = 90
+show_missing = True
+skip_covered = False
