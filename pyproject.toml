@@ -45,7 +45,7 @@ source = ["app"]
 show_missing = true
 skip_covered = false
 fail_under = 90
-exclude_also_lines = [
+exclude_also = [
     "if __name__ == .__main__.:",
     "raise NotImplementedError",
     "raise AssertionError",
@@ -55,6 +55,7 @@ exclude_also_lines = [
 line-length = 100
 target-version = "py311"
 force-exclude = true
+extend-exclude = ["tests", "test_*.py"]
 
 [tool.ruff.lint]
 select = [

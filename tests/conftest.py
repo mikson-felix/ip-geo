@@ -4,17 +4,16 @@ from typing import Any
 
 import fakeredis.aioredis
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from httpx import ASGITransport, AsyncClient
 
 from app.api.exception_handlers import register_exception_handlers
-from app.api.healthcheck import router as healthcheck_router
 from app.api.schemas import GeoLookupResponse
-from app.api.v1.routes import router as v1_router
-from app.application.use_cases import GeoLookupUseCase
 from app.config import Settings
 from app.domain.entities import GeoInfo
 from app.infrastructure.cache import RedisGeoCache
+
+LOOKUP_PATH = "/api/v1/lookup/"
 
 
 @pytest.fixture
@@ -35,9 +34,11 @@ def geo_payload() -> GeoInfo:
 @pytest.fixture
 async def redis_client() -> AsyncIterator[Any]:
     client = fakeredis.aioredis.FakeRedis(decode_responses=True)
-    yield client
-    await client.flushall()
-    await client.aclose()
+    try:
+        yield client
+    finally:
+        await client.flushall()
+        await client.aclose()
 
 
 @pytest.fixture
@@ -71,21 +72,25 @@ def settings(tmp_path: Path) -> Settings:
 
 
 @pytest.fixture
-def app_factory() -> Callable[[GeoLookupUseCase], FastAPI]:
+def app_factory() -> Callable[[Any], FastAPI]:
     def factory(use_case: Any) -> FastAPI:
         app = FastAPI()
         register_exception_handlers(app)
-        app.include_router(v1_router, prefix="/api/v1")
-        app.include_router(healthcheck_router)
 
-        app.router.routes = [route for route in app.router.routes if route.path != "/lookup/"]
+        @app.get("/health/")
+        async def health() -> dict[str, str]:
+            return {"status": "ok"}
 
-        @app.get("/lookup/", response_model=GeoLookupResponse)
-        async def lookup(ip: str) -> GeoLookupResponse:
+        @app.get(LOOKUP_PATH, response_model=GeoLookupResponse)
+        async def lookup(
+            request: Request,
+            ip: str | None = None,
+        ) -> GeoLookupResponse:
+            from app.common.client_ip import extract_client_ip
             from app.common.ip import normalize_ip
 
-            normalized_ip = normalize_ip(ip)
-            result = await use_case.execute(normalized_ip)
+            resolved_ip = normalize_ip(ip) if ip is not None else extract_client_ip(request)
+            result = await use_case.execute(resolved_ip)
             return GeoLookupResponse.from_entity(result)
 
         return app
@@ -94,18 +99,24 @@ def app_factory() -> Callable[[GeoLookupUseCase], FastAPI]:
 
 
 @pytest.fixture
-async def client_factory() -> AsyncIterator[Callable[[FastAPI], AsyncClient]]:
+async def client_factory() -> AsyncIterator[Callable[[FastAPI, str], AsyncClient]]:
     clients: list[AsyncClient] = []
 
-    async def factory(app: FastAPI) -> AsyncClient:
+    async def factory(app: FastAPI, client_host: str = "127.0.0.1") -> AsyncClient:
+        transport = ASGITransport(
+            app=app,
+            raise_app_exceptions=False,
+            client=(client_host, 12345),
+        )
         client = AsyncClient(
-            transport=ASGITransport(app=app, raise_app_exceptions=False),
+            transport=transport,
             base_url="http://test",
         )
         clients.append(client)
         return client
 
-    yield factory
-
-    for client in clients:
-        await client.aclose()
+    try:
+        yield factory
+    finally:
+        for client in clients:
+            await client.aclose()

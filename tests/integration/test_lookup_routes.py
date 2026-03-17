@@ -2,6 +2,7 @@ import pytest
 
 from app.application.use_cases import GeoLookupUseCase
 from app.domain.exceptions import ExternalServiceError
+from tests.conftest import LOOKUP_PATH
 
 
 @pytest.mark.asyncio
@@ -12,7 +13,7 @@ async def test_lookup_returns_422_for_invalid_ip(app_factory, client_factory, ca
     app = app_factory(use_case)
     client = await client_factory(app)
 
-    response = await client.get("/lookup/", params={"ip": "not-an-ip"})
+    response = await client.get(LOOKUP_PATH, params={"ip": "not-an-ip"})
 
     assert response.status_code == 422
     assert response.json() == {
@@ -29,7 +30,7 @@ async def test_lookup_returns_404_when_not_found(app_factory, client_factory, ca
     app = app_factory(use_case)
     client = await client_factory(app)
 
-    response = await client.get("/lookup/", params={"ip": "8.8.8.8"})
+    response = await client.get(LOOKUP_PATH, params={"ip": "8.8.8.8"})
 
     assert response.status_code == 404
     assert response.json() == {
@@ -54,7 +55,7 @@ async def test_lookup_returns_local_result_with_formatted_coordinates(
     app = app_factory(use_case)
     client = await client_factory(app)
 
-    response = await client.get("/lookup/", params={"ip": "8.8.8.8"})
+    response = await client.get(LOOKUP_PATH, params={"ip": "8.8.8.8"})
 
     assert response.status_code == 200
     body = response.json()
@@ -93,8 +94,8 @@ async def test_lookup_returns_cache_on_second_request(
     app = app_factory(use_case)
     client = await client_factory(app)
 
-    first = await client.get("/lookup/", params={"ip": "8.8.8.8"})
-    second = await client.get("/lookup/", params={"ip": "8.8.8.8"})
+    first = await client.get(LOOKUP_PATH, params={"ip": "8.8.8.8"})
+    second = await client.get(LOOKUP_PATH, params={"ip": "8.8.8.8"})
 
     assert first.status_code == 200
     assert second.status_code == 200
@@ -122,7 +123,7 @@ async def test_lookup_returns_500_for_unhandled_exception(
     app = app_factory(BrokenUseCase())
     client = await client_factory(app)
 
-    response = await client.get("/lookup/", params={"ip": "8.8.8.8"})
+    response = await client.get(LOOKUP_PATH, params={"ip": "8.8.8.8"})
 
     assert response.status_code == 500
     assert response.json() == {
@@ -144,10 +145,151 @@ async def test_lookup_returns_502_for_external_service_error(
     app = app_factory(ExplodingUseCase())
     client = await client_factory(app)
 
-    response = await client.get("/lookup/", params={"ip": "8.8.8.8"})
+    response = await client.get(LOOKUP_PATH, params={"ip": "8.8.8.8"})
 
     assert response.status_code == 502
     assert response.json() == {
         "code": "external_service_error",
         "message": "Provider 'ipapi' failed after 3 attempts",
     }
+
+
+@pytest.mark.asyncio
+async def test_lookup_uses_explicit_ip_when_provided(
+    app_factory,
+    client_factory,
+    cache,
+    geo_payload,
+) -> None:
+    captured: dict[str, str] = {}
+
+    class LocalRepo:
+        def lookup(self, ip: str):
+            captured["ip"] = ip
+            return geo_payload.model_copy(update={"ip": ip})
+
+    use_case = GeoLookupUseCase(cache=cache, local_repo=LocalRepo(), providers=[])
+
+    app = app_factory(use_case)
+    client = await client_factory(app)
+
+    response = await client.get(
+        LOOKUP_PATH,
+        params={"ip": "8.8.8.8"},
+        headers={"X-Forwarded-For": "1.1.1.1"},
+    )
+
+    assert response.status_code == 200
+    assert captured["ip"] == "8.8.8.8"
+    assert response.json()["ip"] == "8.8.8.8"
+
+
+@pytest.mark.asyncio
+async def test_lookup_uses_x_forwarded_for_when_ip_missing(
+    app_factory,
+    client_factory,
+    cache,
+    geo_payload,
+) -> None:
+    captured: dict[str, str] = {}
+
+    class LocalRepo:
+        def lookup(self, ip: str):
+            captured["ip"] = ip
+            return geo_payload.model_copy(update={"ip": ip})
+
+    use_case = GeoLookupUseCase(cache=cache, local_repo=LocalRepo(), providers=[])
+
+    app = app_factory(use_case)
+    client = await client_factory(app)
+
+    response = await client.get(
+        LOOKUP_PATH,
+        headers={"X-Forwarded-For": "172.18.0.1, 8.8.8.8"},
+    )
+
+    assert response.status_code == 200
+    assert captured["ip"] == "8.8.8.8"
+    assert response.json()["ip"] == "8.8.8.8"
+
+
+@pytest.mark.asyncio
+async def test_lookup_uses_x_real_ip_when_ip_missing_and_no_forwarded_for(
+    app_factory,
+    client_factory,
+    cache,
+    geo_payload,
+) -> None:
+    captured: dict[str, str] = {}
+
+    class LocalRepo:
+        def lookup(self, ip: str):
+            captured["ip"] = ip
+            return geo_payload.model_copy(update={"ip": ip})
+
+    use_case = GeoLookupUseCase(cache=cache, local_repo=LocalRepo(), providers=[])
+
+    app = app_factory(use_case)
+    client = await client_factory(app)
+
+    response = await client.get(
+        LOOKUP_PATH,
+        headers={"X-Real-IP": "1.1.1.1"},
+    )
+
+    assert response.status_code == 200
+    assert captured["ip"] == "1.1.1.1"
+    assert response.json()["ip"] == "1.1.1.1"
+
+
+@pytest.mark.asyncio
+async def test_lookup_returns_422_when_only_private_request_ip_is_available(
+    app_factory,
+    client_factory,
+    cache,
+) -> None:
+    class LocalRepo:
+        def lookup(self, ip: str):
+            return None
+
+    use_case = GeoLookupUseCase(cache=cache, local_repo=LocalRepo(), providers=[])
+
+    app = app_factory(use_case)
+    client = await client_factory(app)
+
+    response = await client.get(
+        LOOKUP_PATH,
+        headers={"X-Forwarded-For": "172.18.0.1, 10.0.0.5"},
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "code": "invalid_ip",
+        "message": "Could not determine a public client IP address. Pass the 'ip' query parameter explicitly.",
+    }
+
+
+@pytest.mark.asyncio
+async def test_lookup_uses_request_client_host_when_public(
+    app_factory,
+    client_factory,
+    cache,
+    geo_payload,
+) -> None:
+    captured: dict[str, str] = {}
+
+    class LocalRepo:
+        def lookup(self, ip: str):
+            captured["ip"] = ip
+            return geo_payload.model_copy(update={"ip": ip})
+
+    use_case = GeoLookupUseCase(cache=cache, local_repo=LocalRepo(), providers=[])
+
+    app = app_factory(use_case)
+    client = await client_factory(app, client_host="8.8.4.4")
+
+    response = await client.get(LOOKUP_PATH)
+
+    assert response.status_code == 200
+    assert captured["ip"] == "8.8.4.4"
+    assert response.json()["ip"] == "8.8.4.4"
