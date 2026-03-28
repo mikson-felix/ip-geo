@@ -33,7 +33,7 @@ Results are cached in **Redis** to reduce latency and external API usage.
 
 The project follows a layered architecture.
 
-
+```text
 
 app/
 | ├──api/ # FastAPI routes and schemas
@@ -43,8 +43,11 @@ app/
 | ├── ioc/ # Dependency injection configuration
 | ├── config.py # Application settings
 └── main.py # FastAPI application entrypoint
+```
 
 ### Request flow
+
+```text
 
 request
 │
@@ -67,6 +70,7 @@ External providers
 │
 ▼
 cache + return
+```
 
 ---
 
